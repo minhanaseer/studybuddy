@@ -1,9 +1,9 @@
 # Study Buddy
 
-An AI-powered study assistant that answers questions from your own lecture notes/PDFs, and (planned) falls back to researching the web when the answer isn't in your materials.
+An AI-powered study assistant that answers questions from your own lecture notes/PDFs, grounded in the actual document content using RAG (Retrieval-Augmented Generation). Planned: fall back to web research when the answer isn't in your materials.
 
 ## Status
-🚧 Work in progress — PDF upload, extraction, chunking, embeddings, and similarity search are all working end-to-end. LLM answer generation not yet built.
+✅ Core RAG pipeline is fully working end-to-end: upload a PDF, ask a question, get an AI-generated answer grounded in your document, with sources shown.
 
 ## Tech Stack
 - **Language:** Python
@@ -11,12 +11,13 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - **PDF extraction:** PyMuPDF
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`, local, free)
 - **Vector store:** FAISS
-- **LLM:** TBD (planned: Ollama for local inference)
+- **LLM:** Ollama (running `llama3.2` locally, free, no API costs)
 
 ## Setup
 
 ### Prerequisites
 - Python 3 installed
+- [Ollama](https://ollama.com) installed (`brew install ollama`)
 - macOS/Linux terminal (or equivalent)
 
 ### Installation
@@ -35,41 +36,49 @@ An AI-powered study assistant that answers questions from your own lecture notes
 
 3. **Install dependencies**
 ```bash
-   pip install streamlit pymupdf sentence-transformers faiss-cpu
+   pip install streamlit pymupdf sentence-transformers faiss-cpu ollama
 ```
 
-4. **Run the app**
+4. **Pull the LLM model and start Ollama** (in a separate terminal tab, leave running)
+```bash
+   ollama pull llama3.2
+   ollama serve
+```
+
+5. **Run the app**
 ```bash
    streamlit run app.py
 ```
 
    This opens a browser tab at `localhost:8501`.
 
-## How it works so far
+## How it works
 1. Upload a PDF through the file uploader
 2. Text is extracted from every page using PyMuPDF
 3. The text is split into overlapping chunks (200 words, 30-word overlap)
 4. Each chunk is converted into an embedding vector using a local sentence-transformers model
 5. Embeddings are stored in a FAISS index
-6. When the user types a question, it's embedded the same way, and FAISS returns the 3 most similar chunks based on L2 (Euclidean) distance between vectors
+6. When the user asks a question, it's embedded the same way, and FAISS retrieves the 3 most similar chunks
+7. Those chunks are passed as context to a local LLM (Llama 3.2 via Ollama), which generates a grounded answer — instructed to say "I couldn't find this in your notes" if the context doesn't contain the answer
+8. Source chunks used are shown in a collapsible section for verification
 
 ## Roadmap
-- [x] Initial Streamlit setup
 - [x] PDF upload and text extraction
 - [x] Chunking pipeline
 - [x] Embedding pipeline (sentence-transformers)
-- [x] FAISS vector store setup
-- [x] Similarity search: retrieve relevant chunks for a user question
-- [ ] LLM integration to generate grounded answers (instead of showing raw chunks)
-- [ ] Confidence threshold: detect when no chunk is a strong match
+- [x] FAISS vector store + similarity search
+- [x] LLM integration for grounded answer generation (Ollama + Llama 3.2)
+- [ ] Confidence threshold: detect low-relevance retrieval and warn the user
 - [ ] Web search fallback for questions not covered in notes
-- [ ] Source citations in answers
+- [ ] Inline source citations (page numbers, not just raw chunk text)
+- [ ] Support multiple PDFs at once
 - [ ] Dockerize the app
 - [ ] Deploy live demo
 
 ## What I Learned
-- Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF (only ~2 chunks total). Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
-- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are actually relevant. The L2 distance score is a useful signal for this: closely-bunched distances across all top matches (e.g. 1.89, 1.90, 2.01) indicate none of the results are a strong match, whereas a clear gap between the top result and the rest indicates high confidence.
-- PyMuPDF's `fitz` import name is being deprecated in favor of `import pymupdf` directly.
+- Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF. Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
+- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are truly relevant. The L2 distance score is a useful confidence signal: closely-bunched distances across all top matches suggest a weak match overall.
+- Prompt design matters for grounding: explicitly instructing the LLM to only use the provided context (and to say when it can't find an answer) reduces hallucination compared to a plain question-answering prompt.
+- Running the LLM locally via Ollama avoids API costs entirely, but requires the `ollama serve` background process to stay running — a good reminder that local-first tools trade convenience for control.
 
 ## Architecture
