@@ -3,7 +3,7 @@
 An AI-powered study assistant that answers questions from your own lecture notes/PDFs, and (planned) falls back to researching the web when the answer isn't in your materials.
 
 ## Status
-🚧 Work in progress — PDF upload, text extraction, chunking, and embeddings are working. Search/Q&A not yet built.
+🚧 Work in progress — PDF upload, extraction, chunking, embeddings, and similarity search are all working end-to-end. LLM answer generation not yet built.
 
 ## Tech Stack
 - **Language:** Python
@@ -43,14 +43,15 @@ An AI-powered study assistant that answers questions from your own lecture notes
    streamlit run app.py
 ```
 
-   This should open a browser tab at `localhost:8501` showing the app.
+   This opens a browser tab at `localhost:8501`.
 
 ## How it works so far
 1. Upload a PDF through the file uploader
 2. Text is extracted from every page using PyMuPDF
-3. The text is split into overlapping chunks (default: 500 words, 50-word overlap)
+3. The text is split into overlapping chunks (200 words, 30-word overlap)
 4. Each chunk is converted into an embedding vector using a local sentence-transformers model
-5. Embeddings are stored in a FAISS index, ready for similarity search (coming next)
+5. Embeddings are stored in a FAISS index
+6. When the user types a question, it's embedded the same way, and FAISS returns the 3 most similar chunks based on L2 (Euclidean) distance between vectors
 
 ## Roadmap
 - [x] Initial Streamlit setup
@@ -58,13 +59,17 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - [x] Chunking pipeline
 - [x] Embedding pipeline (sentence-transformers)
 - [x] FAISS vector store setup
-- [ ] Similarity search: retrieve relevant chunks for a user question
-- [ ] LLM integration to generate grounded answers
+- [x] Similarity search: retrieve relevant chunks for a user question
+- [ ] LLM integration to generate grounded answers (instead of showing raw chunks)
+- [ ] Confidence threshold: detect when no chunk is a strong match
 - [ ] Web search fallback for questions not covered in notes
 - [ ] Source citations in answers
 - [ ] Dockerize the app
 - [ ] Deploy live demo
 
 ## What I Learned
-- Chunk size matters a lot depending on document type — a 500-word chunk size worked fine for dense text, but produced too few, too-coarse chunks on a short slide-deck PDF (only ~2 chunks total). Smaller chunk sizes (150–200 words) are likely better for slide-style content.
+- Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF (only ~2 chunks total). Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
+- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are actually relevant. The L2 distance score is a useful signal for this: closely-bunched distances across all top matches (e.g. 1.89, 1.90, 2.01) indicate none of the results are a strong match, whereas a clear gap between the top result and the rest indicates high confidence.
 - PyMuPDF's `fitz` import name is being deprecated in favor of `import pymupdf` directly.
+
+## Architecture
