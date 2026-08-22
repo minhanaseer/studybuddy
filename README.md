@@ -4,6 +4,7 @@ An AI-powered study assistant that answers questions from your own lecture notes
 
 ## Status
 ✅ Core RAG pipeline is fully working end-to-end: upload a PDF, ask a question, get an AI-generated answer grounded in your document, with sources shown.
+🚧 Next: web search fallback (using Tavily API) for questions not covered in uploaded notes — API key obtained, integration pending.
 
 ## Tech Stack
 - **Language:** Python
@@ -69,7 +70,7 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - [x] FAISS vector store + similarity search
 - [x] LLM integration for grounded answer generation (Ollama + Llama 3.2)
 - [ ] Confidence threshold: detect low-relevance retrieval and warn the user
-- [ ] Web search fallback for questions not covered in notes
+- [ ] Web search fallback for questions not covered in notes (Tavily API selected, integration pending)
 - [ ] Inline source citations (page numbers, not just raw chunk text)
 - [ ] Support multiple PDFs at once
 - [ ] Dockerize the app
