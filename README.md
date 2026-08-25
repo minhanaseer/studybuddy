@@ -1,10 +1,11 @@
 # Study Buddy
 
-An AI-powered study assistant that answers questions from your own lecture notes/PDFs, grounded in the actual document content using RAG (Retrieval-Augmented Generation). Planned: fall back to web research when the answer isn't in your materials.
+An AI-powered study assistant that answers questions from your own lecture notes/PDFs, grounded in the actual document content using RAG (Retrieval-Augmented Generation). Supports multiple documents at once, with source attribution. Planned: fall back to web research when the answer isn't in your materials.
 
 ## Status
-✅ Core RAG pipeline is fully working end-to-end: upload a PDF, ask a question, get an AI-generated answer grounded in your document, with sources shown.
-🚧 Next: web search fallback (using Tavily API) for questions not covered in uploaded notes — API key obtained, integration pending.
+✅ Core RAG pipeline is fully working end-to-end, with multi-document support: upload one or more PDFs, ask a question, get an AI-generated answer grounded in your documents, with per-document source attribution and a confidence indicator.
+
+🚧 Next: web search fallback (Tavily API selected, integration pending) → Docker → live deployment.
 
 ## Tech Stack
 - **Language:** Python
@@ -13,6 +14,7 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`, local, free)
 - **Vector store:** FAISS
 - **LLM:** Ollama (running `llama3.2` locally, free, no API costs)
+- **Web search (planned):** Tavily API
 
 ## Setup
 
@@ -54,14 +56,15 @@ An AI-powered study assistant that answers questions from your own lecture notes
    This opens a browser tab at `localhost:8501`.
 
 ## How it works
-1. Upload a PDF through the file uploader
-2. Text is extracted from every page using PyMuPDF
-3. The text is split into overlapping chunks (200 words, 30-word overlap)
-4. Each chunk is converted into an embedding vector using a local sentence-transformers model
-5. Embeddings are stored in a FAISS index
-6. When the user asks a question, it's embedded the same way, and FAISS retrieves the 3 most similar chunks
-7. Those chunks are passed as context to a local LLM (Llama 3.2 via Ollama), which generates a grounded answer — instructed to say "I couldn't find this in your notes" if the context doesn't contain the answer
-8. Source chunks used are shown in a collapsible section for verification
+1. Upload one or more PDFs through the file uploader
+2. Text is extracted from every page of every PDF using PyMuPDF
+3. Each document's text is split into overlapping chunks (200 words, 30-word overlap), tagged with its source filename
+4. All chunks (across all uploaded documents) are converted into embedding vectors using a local sentence-transformers model
+5. Embeddings are stored in a single FAISS index, alongside a parallel list tracking each chunk's source document
+6. When the user asks a question, it's embedded the same way, and FAISS retrieves the 3 most similar chunks across all documents
+7. A confidence check compares the best match's distance against a threshold — if the match is weak, the user sees a warning that the answer may be unreliable
+8. Retrieved chunks (tagged by source) are passed as context to a local LLM (Llama 3.2 via Ollama), which generates a grounded answer and can reference which document it came from
+9. Source chunks used are shown in a collapsible section, labeled by filename, for verification
 
 ## Roadmap
 - [x] PDF upload and text extraction
@@ -69,18 +72,19 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - [x] Embedding pipeline (sentence-transformers)
 - [x] FAISS vector store + similarity search
 - [x] LLM integration for grounded answer generation (Ollama + Llama 3.2)
-- [ ] Confidence threshold: detect low-relevance retrieval and warn the user
+- [x] Confidence threshold to flag weak/irrelevant retrieval matches
+- [x] Support multiple PDFs at once, with per-chunk source tracking
 - [ ] Web search fallback for questions not covered in notes (Tavily API selected, integration pending)
-- [ ] Inline source citations (page numbers, not just raw chunk text)
-- [ ] Support multiple PDFs at once
 - [ ] Dockerize the app
 - [ ] Deploy live demo
+- [ ] Record demo video/GIF
 
 ## What I Learned
 - Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF. Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
-- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are truly relevant. The L2 distance score is a useful confidence signal: closely-bunched distances across all top matches suggest a weak match overall.
+- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are truly relevant. Added a confidence threshold using the L2 distance score to flag weak matches explicitly to the user, rather than presenting every answer with equal confidence.
 - Prompt design matters for grounding: explicitly instructing the LLM to only use the provided context (and to say when it can't find an answer) reduces hallucination compared to a plain question-answering prompt.
-- Running the LLM locally via Ollama avoids API costs entirely, but requires the `ollama serve` background process to stay running — a good reminder that local-first tools trade convenience for control.
+- Supporting multiple documents required tracking source alongside every chunk from the start (a parallel list, not just a flat list of text) — retrofitting source tracking after the fact would have been much messier than designing for it upfront.
+- Running the LLM locally via Ollama avoids API costs entirely, but requires the `ollama serve` background process to stay running.
 
 ## Architecture
 
@@ -129,4 +133,7 @@ This method cuts purely by word count, with no awareness of sentence or paragrap
 Every chunk, regardless of its actual length, gets converted into a **fixed-size vector of 384 numbers** (using `all-MiniLM-L6-v2`). This dimension count is a property of the specific embedding model, not related to word/character count — a 5-word chunk and a 200-word chunk both produce exactly 384 numbers. Think of it as a fixed-length "fingerprint of meaning" for whatever text goes in.
 
 ### What FAISS actually stores
-`IndexFlatL2` stores every chunk's embedding vector in memory (RAM) as-is, with no compression ("Flat"), and compares vectors using L2 (Euclidean) distance. On search, it does a brute-force comparison against every stored vector — exact and simple, appropriate at this project's scale (tens of chunks), though larger-scale RAG systems (millions of vectors) typically use approximate index types (e.g. `IndexIVFFlat`, `IndexHNSW`) that trade a little accuracy for much greater speed.
+`IndexFlatL2` stores every chunk's embedding vector in memory (RAM) as-is, with no compression ("Flat"), and compares vectors using L2 (Euclidean) distance. On search, it does a brute-force comparison against every stored vector — exact and simple, appropriate at this project's scale (tens to low hundreds of chunks), though larger-scale RAG systems (millions of vectors) typically use approximate index types (e.g. `IndexIVFFlat`, `IndexHNSW`) that trade a little accuracy for much greater speed.
+
+### On third-party components
+This project orchestrates several external tools rather than building any of them from scratch: PyMuPDF (extraction), sentence-transformers (embeddings), FAISS (vector storage/search), and Ollama/Llama 3.2 (text generation). The engineering work is in the pipeline design, chunking/retrieval strategy, prompt engineering for grounding, and confidence handling — not in building the underlying models or libraries. This mirrors how most real-world "AI engineering" roles work: composing and orchestrating existing models and tools effectively, rather than training models from scratch.
