@@ -62,7 +62,7 @@ An AI-powered study assistant that answers questions from your own lecture notes
 4. All chunks (across all uploaded documents) are converted into embedding vectors using a local sentence-transformers model
 5. Embeddings are stored in a single FAISS index, alongside a parallel list tracking each chunk's source document
 6. When the user asks a question, it's embedded the same way, and FAISS retrieves the 3 most similar chunks across all documents
-7. A confidence check compares the best match's distance against a threshold — if the match is weak, the user sees a warning that the answer may be unreliable
+7. A confidence check compares the best match's distance against a threshold. If the match is weak, generation is skipped entirely — no LLM call is made, and the user sees guidance to rephrase their question instead of a potentially misleading answer
 8. Retrieved chunks (tagged by source) are passed as context to a local LLM (Llama 3.2 via Ollama), which generates a grounded answer and can reference which document it came from
 9. Source chunks used are shown in a collapsible section, labeled by filename, for verification
 
@@ -85,6 +85,25 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - Prompt design matters for grounding: explicitly instructing the LLM to only use the provided context (and to say when it can't find an answer) reduces hallucination compared to a plain question-answering prompt.
 - Supporting multiple documents required tracking source alongside every chunk from the start (a parallel list, not just a flat list of text) — retrofitting source tracking after the fact would have been much messier than designing for it upfront.
 - Running the LLM locally via Ollama avoids API costs entirely, but requires the `ollama serve` background process to stay running.
+- On low-confidence matches, generating an answer anyway (even with a warning) still risks misleading the user, since the LLM will confidently answer from whatever weak context it's given. Skipping generation entirely below the confidence threshold, and guiding the user to rephrase instead, is a better user experience than a warning label on an unreliable answer.
+
+## Function Reference
+
+**`load_embedding_model()`**
+Loads the sentence-transformers embedding model. Wrapped in `@st.cache_resource` so Streamlit loads it once and reuses it across reruns, instead of reloading on every interaction.
+
+**`chunk_text(text, chunk_size=200, overlap=30)`**
+Splits a document's extracted text into overlapping word-count-based chunks. Extracted as a function since it's called once per uploaded file in a loop, and keeps the tunable parameters in one place.
+
+**`generate_answer(question, retrieved_chunks_with_sources)`**
+Builds the grounding prompt (retrieved context + question + instructions to only use provided context) and sends it to the local LLM via Ollama. Returns the generated answer text. This is the "Generation" half of RAG — everything upstream of this function is retrieval.
+
+**Non-function blocks (intentionally not extracted into functions):**
+- The upload/processing loop — runs once per upload event, builds parallel `all_chunks`/`all_sources` lists so every chunk stays linked to its source file
+- The embedding + FAISS indexing block — encodes all chunks, builds the `IndexFlatL2` index, stores it in `st.session_state` so it survives Streamlit's rerun-on-every-interaction behavior
+- The question-handling block — runs the FAISS search, checks confidence, and decides whether to call `generate_answer()` or show low-confidence guidance instead
+
+These stayed as plain sequential code (not functions) because they only run once, tied directly to the page's flow — there's no reuse benefit to extracting them.
 
 ## Architecture
 
