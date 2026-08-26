@@ -3,9 +3,9 @@
 An AI-powered study assistant that answers questions from your own lecture notes/PDFs, grounded in the actual document content using RAG (Retrieval-Augmented Generation). Supports multiple documents at once, with source attribution. Planned: fall back to web research when the answer isn't in your materials.
 
 ## Status
-✅ Core RAG pipeline is fully working end-to-end, with multi-document support: upload one or more PDFs, ask a question, get an AI-generated answer grounded in your documents, with per-document source attribution and a confidence indicator.
+✅ Full pipeline working end-to-end: upload one or more PDFs, ask a question, and get an answer either grounded in your documents (with source attribution) or, when the question isn't covered in your notes, automatically researched from the web via Tavily — clearly labeled as coming from web search rather than your own material.
 
-🚧 Next: web search fallback (Tavily API selected, integration pending) → Docker → live deployment.
+🚧 Next: Docker → live deployment → demo video.
 
 ## Tech Stack
 - **Language:** Python
@@ -74,7 +74,7 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - [x] LLM integration for grounded answer generation (Ollama + Llama 3.2)
 - [x] Confidence threshold to flag weak/irrelevant retrieval matches
 - [x] Support multiple PDFs at once, with per-chunk source tracking
-- [ ] Web search fallback for questions not covered in notes (Tavily API selected, integration pending)
+- [x] Web search fallback for questions not covered in notes (Tavily API) — clearly labeled "the answer isn't in the document(s) attached, but here's what I found from web search"
 - [ ] Dockerize the app
 - [ ] Deploy live demo
 - [ ] Record demo video/GIF
