@@ -33,7 +33,6 @@ h2, h3 {
     font-weight: 600;
 }
 
-/* File uploader */
 [data-testid="stFileUploader"] {
     background-color: #161616;
     border: 1px dashed #3A3A3A;
@@ -41,7 +40,6 @@ h2, h3 {
     padding: 1rem;
 }
 
-/* Text input */
 .stTextInput input {
     background-color: #161616;
     color: #E8E8E8;
@@ -53,7 +51,6 @@ h2, h3 {
     box-shadow: 0 0 0 1px #5B8DEE;
 }
 
-/* Success / info / warning boxes, restyled monochrome + one accent */
 div[data-testid="stAlert"] {
     background-color: #161616;
     border: 1px solid #2A2A2A;
@@ -63,12 +60,10 @@ div[data-testid="stAlert"] {
     font-size: 0.9rem;
 }
 
-/* Divider */
 hr {
     border-color: #2A2A2A;
 }
 
-/* Expander */
 .streamlit-expanderHeader {
     background-color: #161616;
     border: 1px solid #2A2A2A;
@@ -76,7 +71,6 @@ hr {
     color: #C9C9C9;
 }
 
-/* Text areas (source chunks) */
 .stTextArea textarea {
     background-color: #131313;
     color: #A0A0A0;
@@ -85,7 +79,6 @@ hr {
     font-size: 0.85rem;
 }
 
-/* Answer block accent */
 .answer-block {
     background-color: #141820;
     border-left: 3px solid #5B8DEE;
@@ -95,7 +88,16 @@ hr {
     line-height: 1.6;
 }
 
-/* Spinner text */
+.low-confidence-block {
+    background-color: #1F1812;
+    border-left: 3px solid #D9A441;
+    border-radius: 4px;
+    padding: 1.2rem;
+    margin-top: 0.5rem;
+    line-height: 1.6;
+    color: #D9C6A0;
+}
+
 .stSpinner > div {
     color: #8A8A8A;
 }
@@ -182,29 +184,45 @@ if uploaded_files:
 
     if question:
         question_embedding = model.encode([question]).astype('float32')
-        k = 3
+        k = min(3, len(st.session_state['chunks']))
         distances, indices = st.session_state['index'].search(question_embedding, k)
-
-        retrieved_chunks_with_sources = [
-            (st.session_state['chunks'][idx], st.session_state['sources'][idx])
-            for idx in indices[0]
-        ]
 
         top_distance = distances[0][0]
 
         if top_distance > CONFIDENCE_THRESHOLD:
-            st.warning(f"⚠ Low confidence (distance: {top_distance:.2f}) — this may not be well-covered in your notes.")
+            # Low confidence: skip generation entirely, don't answer from a weak match
+            st.markdown(
+                f'<div class="low-confidence-block">'
+                f'<strong>⚠ No strong match found</strong> (closest distance: {top_distance:.2f})<br><br>'
+                f"This question doesn't seem to be well-covered in your uploaded notes. "
+                f"Try asking something more specific about the document's actual content, "
+                f"rather than a general question like \"what is this about.\""
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            with st.expander("See closest chunks found anyway (for reference)"):
+                for rank, idx in enumerate(indices[0]):
+                    source_name = st.session_state['sources'][idx]
+                    st.markdown(f"**{rank+1}.** *{source_name}* (distance: {distances[0][rank]:.2f})")
+                    st.text(st.session_state['chunks'][idx])
         else:
+            # Good match: proceed with generation as normal
+            retrieved_chunks_with_sources = [
+                (st.session_state['chunks'][idx], st.session_state['sources'][idx])
+                for idx in indices[0]
+            ]
+
             st.info(f"✓ Good match (distance: {top_distance:.2f})")
 
-        with st.spinner("Generating answer..."):
-            answer = generate_answer(question, retrieved_chunks_with_sources)
+            with st.spinner("Generating answer..."):
+                answer = generate_answer(question, retrieved_chunks_with_sources)
 
-        st.markdown("### Answer")
-        st.markdown(f'<div class="answer-block">{answer}</div>', unsafe_allow_html=True)
+            st.markdown("### Answer")
+            st.markdown(f'<div class="answer-block">{answer}</div>', unsafe_allow_html=True)
 
-        with st.expander("See source chunks used"):
-            for rank, idx in enumerate(indices[0]):
-                source_name = st.session_state['sources'][idx]
-                st.markdown(f"**Source {rank+1}** — *{source_name}* (distance: {distances[0][rank]:.2f})")
-                st.text(st.session_state['chunks'][idx])
+            with st.expander("See source chunks used"):
+                for rank, idx in enumerate(indices[0]):
+                    source_name = st.session_state['sources'][idx]
+                    st.markdown(f"**Source {rank+1}** — *{source_name}* (distance: {distances[0][rank]:.2f})")
+                    st.text(st.session_state['chunks'][idx])
