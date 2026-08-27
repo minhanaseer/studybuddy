@@ -4,12 +4,6 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 import ollama
-import os
-from dotenv import load_dotenv
-from tavily import TavilyClient
-
-load_dotenv()
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 st.set_page_config(page_title="Study Buddy", page_icon="◆", layout="centered")
 
@@ -28,14 +22,14 @@ hr { border-color: #2A2A2A; }
 .streamlit-expanderHeader { background-color: #161616; border: 1px solid #2A2A2A; border-radius: 6px; color: #C9C9C9; }
 .stTextArea textarea { background-color: #131313; color: #A0A0A0; border: 1px solid #2A2A2A; font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; }
 .answer-block { background-color: #141820; border-left: 3px solid #5B8DEE; border-radius: 4px; padding: 1.2rem; margin-top: 0.5rem; line-height: 1.6; }
-.web-answer-block { background-color: #1A1420; border-left: 3px solid #B57EE0; border-radius: 4px; padding: 1.2rem; margin-top: 0.5rem; line-height: 1.6; }
+.not-found-block { background-color: #1F1812; border-left: 3px solid #D9A441; border-radius: 4px; padding: 1.2rem; margin-top: 0.5rem; line-height: 1.6; color: #D9C6A0; }
 .stSpinner > div { color: #8A8A8A; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 st.title("Study Buddy")
-st.caption("Ask questions about your own lecture notes. If it's not in your notes, I'll research the web instead.")
+st.caption("Ask questions about your own lecture notes — answered only from what's actually in them.")
 
 CONFIDENCE_THRESHOLD = 1.0
 
@@ -59,33 +53,24 @@ def chunk_text(text, chunk_size=200, overlap=30):
 def generate_answer_from_notes(question, retrieved_chunks_with_sources):
     context_parts = [f"[From {src}]\n{text}" for text, src in retrieved_chunks_with_sources]
     context = "\n\n".join(context_parts)
-    prompt = f"""Answer the question using ONLY the context below. If the context doesn't contain the answer, say "I couldn't find this in your notes." Mention which document the answer came from if relevant.
+    prompt = f"""You are answering strictly based on provided context. Do not use any outside knowledge. Do not guess, infer, or fill in gaps with assumptions.
+
+Rules:
+1. Only state facts that are explicitly written in the context below.
+2. If the context does not clearly contain the answer, respond exactly: "I couldn't find this in your notes."
+3. Do not speculate about what the document "probably" says. Quote or closely paraphrase only what is actually there.
 
 Context:
 {context}
 
 Question: {question}
 
-Answer:"""
-    response = ollama.chat(model='llama3.2', messages=[{'role': 'user', 'content': prompt}])
-    return response['message']['content']
-
-def search_web(question):
-    results = tavily_client.search(question, max_results=4)
-    return results['results']
-
-def generate_answer_from_web(question, web_results):
-    context_parts = [f"[Source: {r['title']} - {r['url']}]\n{r['content']}" for r in web_results]
-    context = "\n\n".join(context_parts)
-    prompt = f"""Your notes didn't cover this question, so answer it using the web search results below instead. Be clear that this is general information, not from the user's own notes. Cite which source you used.
-
-Web search results:
-{context}
-
-Question: {question}
-
-Answer:"""
-    response = ollama.chat(model='llama3.2', messages=[{'role': 'user', 'content': prompt}])
+Answer (strictly from the context above):"""
+    response = ollama.chat(
+        model='llama3.2',
+        messages=[{'role': 'user', 'content': prompt}],
+        options={'temperature': 0.1}
+    )
     return response['message']['content']
 
 uploaded_files = st.file_uploader("Upload lecture PDFs", type="pdf", accept_multiple_files=True)
@@ -129,21 +114,18 @@ if uploaded_files:
 
         if top_distance > CONFIDENCE_THRESHOLD:
             st.markdown(
-                f'<div style="color:#9A9A9A; font-family:\'IBM Plex Mono\',monospace; font-size:0.9rem; margin-bottom:0.5rem;">'
-                f'⚠ The answer isn't in the document(s) attached, but here's what I found from web search:'
-                f'</div>',
+                '<div class="not-found-block">'
+                '<strong>⚠ Not found in the document(s) attached.</strong><br><br>'
+                'This question doesn\'t appear to be covered in your uploaded notes. '
+                'Try rephrasing, or check that the right document is uploaded.'
+                '</div>',
                 unsafe_allow_html=True
             )
-            with st.spinner("Searching the web..."):
-                web_results = search_web(question)
-            with st.spinner("Generating answer from web sources..."):
-                answer = generate_answer_from_web(question, web_results)
-            st.markdown("### Answer (from web search — not in your notes)")
-            st.markdown(f'<div class="web-answer-block">{answer}</div>', unsafe_allow_html=True)
-            with st.expander("See web sources used"):
-                for r in web_results:
-                    st.markdown(f"**[{r['title']}]({r['url']})**")
-                    st.text(r['content'][:300] + "...")
+            with st.expander("See closest chunks found anyway (for reference)"):
+                for rank, idx in enumerate(indices[0]):
+                    source_name = st.session_state['sources'][idx]
+                    st.markdown(f"**{rank+1}.** *{source_name}* (distance: {distances[0][rank]:.2f})")
+                    st.text(st.session_state['chunks'][idx])
         else:
             retrieved_chunks_with_sources = [
                 (st.session_state['chunks'][idx], st.session_state['sources'][idx])
@@ -152,8 +134,8 @@ if uploaded_files:
             st.info(f"✓ Good match in your notes (distance: {top_distance:.2f})")
             with st.spinner("Generating answer..."):
                 answer = generate_answer_from_notes(question, retrieved_chunks_with_sources)
-            st.markdown("### Answer (from your notes)")
-            st.markdown(f'<div class="answer-block">{answer}</div>', unsafe_allow_html=True)
+            st.markdown("### Answer")
+            st.markdown('<div class="answer-block">' + answer + '</div>', unsafe_allow_html=True)
             with st.expander("See source chunks used"):
                 for rank, idx in enumerate(indices[0]):
                     source_name = st.session_state['sources'][idx]
