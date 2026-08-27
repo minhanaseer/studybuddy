@@ -1,11 +1,9 @@
 # Study Buddy
 
-An AI-powered study assistant that answers questions from your own lecture notes/PDFs, grounded in the actual document content using RAG (Retrieval-Augmented Generation). Supports multiple documents at once, with source attribution. Planned: fall back to web research when the answer isn't in your materials.
+An AI-powered study assistant that answers questions strictly from your own uploaded lecture notes/PDFs, using RAG (Retrieval-Augmented Generation). If the answer isn't in your documents, it says so clearly instead of guessing or searching elsewhere.
 
 ## Status
-✅ Full pipeline working end-to-end: upload one or more PDFs, ask a question, and get an answer either grounded in your documents (with source attribution) or, when the question isn't covered in your notes, automatically researched from the web via Tavily — clearly labeled as coming from web search rather than your own material.
-
-🚧 Next: Docker → live deployment → demo video.
+✅ Complete, working RAG pipeline: upload one or more PDFs, ask a question, get an answer grounded strictly in your documents, with source attribution and a confidence check. No external knowledge, no web search — answers only from what you actually uploaded.
 
 ## Tech Stack
 - **Language:** Python
@@ -14,7 +12,6 @@ An AI-powered study assistant that answers questions from your own lecture notes
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`, local, free)
 - **Vector store:** FAISS
 - **LLM:** Ollama (running `llama3.2` locally, free, no API costs)
-- **Web search (planned):** Tavily API
 
 ## Setup
 
@@ -62,97 +59,52 @@ An AI-powered study assistant that answers questions from your own lecture notes
 4. All chunks (across all uploaded documents) are converted into embedding vectors using a local sentence-transformers model
 5. Embeddings are stored in a single FAISS index, alongside a parallel list tracking each chunk's source document
 6. When the user asks a question, it's embedded the same way, and FAISS retrieves the 3 most similar chunks across all documents
-7. A confidence check compares the best match's distance against a threshold. If the match is weak, generation is skipped entirely — no LLM call is made, and the user sees guidance to rephrase their question instead of a potentially misleading answer
-8. Retrieved chunks (tagged by source) are passed as context to a local LLM (Llama 3.2 via Ollama), which generates a grounded answer and can reference which document it came from
+7. A confidence check compares the best match's distance against a threshold. If the match is weak, the app clearly states the answer isn't in the uploaded document(s) — no generation, no guessing, no external lookup
+8. If the match is strong, retrieved chunks (tagged by source) are passed as context to a local LLM (Llama 3.2 via Ollama, temperature 0.1) with strict instructions to answer only from that context
 9. Source chunks used are shown in a collapsible section, labeled by filename, for verification
 
+## What this app can and can't answer
+**Can answer:** specific, fact-based questions where the answer is explicitly stated somewhere in the uploaded document(s), across single or multiple files.
+
+**Cannot answer:** anything not literally present in the uploaded documents (no external/web knowledge), vague meta-questions like "what is this about" or "summarize this" (these rarely match a specific retrieved chunk well), or questions requiring synthesis across an entire document rather than a specific passage.
+
 ## Roadmap
-- [x] PDF upload and text extraction
+- [x] PDF upload and text extraction (multi-file)
 - [x] Chunking pipeline
 - [x] Embedding pipeline (sentence-transformers)
 - [x] FAISS vector store + similarity search
-- [x] LLM integration for grounded answer generation (Ollama + Llama 3.2)
-- [x] Confidence threshold to flag weak/irrelevant retrieval matches
-- [x] Support multiple PDFs at once, with per-chunk source tracking
-- [x] Web search fallback for questions not covered in notes (Tavily API) — clearly labeled "the answer isn't in the document(s) attached, but here's what I found from web search"
+- [x] LLM integration for grounded answer generation (Ollama + Llama 3.2, low temperature)
+- [x] Confidence threshold that skips generation on weak matches
+- [x] Multi-PDF support with per-chunk source tracking
+- [x] Dark UI theme
 - [ ] Dockerize the app
 - [ ] Deploy live demo
 - [ ] Record demo video/GIF
 
 ## What I Learned
 - Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF. Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
-- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are truly relevant. Added a confidence threshold using the L2 distance score to flag weak matches explicitly to the user, rather than presenting every answer with equal confidence.
-- Prompt design matters for grounding: explicitly instructing the LLM to only use the provided context (and to say when it can't find an answer) reduces hallucination compared to a plain question-answering prompt.
-- Supporting multiple documents required tracking source alongside every chunk from the start (a parallel list, not just a flat list of text) — retrofitting source tracking after the fact would have been much messier than designing for it upfront.
+- Similarity search alone isn't enough for vague questions (e.g. "summarize this document") — it always returns the *k* closest chunks even if none are truly relevant. A confidence threshold using the L2 distance score flags this, skipping generation entirely on weak matches rather than answering from irrelevant context.
+- **Tried and reversed a web search fallback (Tavily API):** initially built a feature to search the web when a question wasn't covered in the notes. Testing revealed this was unreliable — vague or document-dependent questions (e.g. "what is the budget for this year") got sent to web search with no context about *which* budget, returning plausible-sounding but irrelevant answers (e.g. the US federal budget, when the actual document was something else entirely). Rather than build increasingly complex heuristics to detect "is this question really about my document," removed the web fallback entirely in favor of a simple, honest rule: if it's not clearly in the uploaded documents, say so. This was a genuine design reversal based on testing, not a plan followed blindly.
+- Small local LLMs (like `llama3.2:3b`) are prone to filling gaps with plausible-sounding but fabricated content, especially at default temperature settings. Lowering temperature to 0.1 and writing explicit, numbered "do not guess" rules into the prompt meaningfully reduced this, though it doesn't fully eliminate the limitation of a small model.
+- Supporting multiple documents required tracking source alongside every chunk from the start (a parallel list, not just a flat list of text) — designing for this upfront was far simpler than retrofitting it later.
 - Running the LLM locally via Ollama avoids API costs entirely, but requires the `ollama serve` background process to stay running.
-- On low-confidence matches, generating an answer anyway (even with a warning) still risks misleading the user, since the LLM will confidently answer from whatever weak context it's given. Skipping generation entirely below the confidence threshold, and guiding the user to rephrase instead, is a better user experience than a warning label on an unreliable answer.
-
-## Function Reference
-
-**`load_embedding_model()`**
-Loads the sentence-transformers embedding model. Wrapped in `@st.cache_resource` so Streamlit loads it once and reuses it across reruns, instead of reloading on every interaction.
-
-**`chunk_text(text, chunk_size=200, overlap=30)`**
-Splits a document's extracted text into overlapping word-count-based chunks. Extracted as a function since it's called once per uploaded file in a loop, and keeps the tunable parameters in one place.
-
-**`generate_answer(question, retrieved_chunks_with_sources)`**
-Builds the grounding prompt (retrieved context + question + instructions to only use provided context) and sends it to the local LLM via Ollama. Returns the generated answer text. This is the "Generation" half of RAG — everything upstream of this function is retrieval.
-
-**Non-function blocks (intentionally not extracted into functions):**
-- The upload/processing loop — runs once per upload event, builds parallel `all_chunks`/`all_sources` lists so every chunk stays linked to its source file
-- The embedding + FAISS indexing block — encodes all chunks, builds the `IndexFlatL2` index, stores it in `st.session_state` so it survives Streamlit's rerun-on-every-interaction behavior
-- The question-handling block — runs the FAISS search, checks confidence, and decides whether to call `generate_answer()` or show low-confidence guidance instead
-
-These stayed as plain sequential code (not functions) because they only run once, tied directly to the page's flow — there's no reuse benefit to extracting them.
 
 ## Architecture
 
-## Technical Deep Dive: How Chunking Actually Works
-
-The chunking function uses **fixed-size, word-count-based chunking with overlap** — the simplest chunking strategy in RAG, chosen deliberately for its predictability and simplicity over more complex alternatives (e.g. sentence-based or semantic chunking).
-
-```python
-def chunk_text(text, chunk_size=200, overlap=30):
-    words = text.split()
-    chunks = []
-    start = 0
-    while start < len(words):
-        end = start + chunk_size
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        start += chunk_size - overlap
-    return chunks
-```
-
-### How the sliding window works
-Each new chunk starts `chunk_size - overlap` words after the previous chunk started (170 words forward, with the defaults above). This means each chunk shares its last 30 words with the start of the next chunk, preserving context across the cut point instead of splitting an idea cleanly in half.
-
-**Worked example — an 830-word document, chunk_size=200, overlap=30:**
-
-| Chunk # | start | end | Words used | Length |
-|---|---|---|---|---|
-| 1 | 0 | 200 | 0–200 | 200 |
-| 2 | 170 | 370 | 170–370 | 200 |
-| 3 | 340 | 540 | 340–540 | 200 |
-| 4 | 510 | 710 | 510–710 | 200 |
-| 5 | 680 | 830 | 680–830 | 150 (final chunk, ran out of words) |
-
-Result: 5 chunks. The final chunk is shorter than the rest whenever the document length isn't an exact multiple of the step size — expected behavior, not a bug.
-
-### General formula
-This generalizes to any document length — a short PDF might produce 1 chunk, a full semester of combined notes might produce hundreds, using the exact same function with no changes needed.
-
 ### Why 200 words / 30-word overlap specifically
-These values are **empirically chosen defaults, not derived from any formula**. The starting rule of thumb: overlap is typically 10–20% of chunk size (30/200 = 15% here). The chunk size itself was reduced from an initial 500-word default after testing showed it produced only ~2 chunks on a short slide-deck PDF — too coarse for precise retrieval. 200 words was chosen as a better fit for slide-style content, where each idea is already relatively short.
+Empirically chosen defaults, not derived from a formula. Overlap is typically 10–20% of chunk size (30/200 = 15% here). Chunk size was reduced from an initial 500-word default after testing showed it produced only ~2 chunks on a short slide-deck PDF — too coarse for precise retrieval.
 
 ### Known limitation
-This method cuts purely by word count, with no awareness of sentence or paragraph boundaries — a chunk can end mid-sentence. The word-overlap mitigates this somewhat (the cut-off idea also appears at the start of the next chunk), but doesn't fully solve it. More advanced approaches (sentence-boundary-aware chunking, or semantic chunking using the embedding model to detect topic shifts) could improve this, and are a possible future improvement.
+This method cuts purely by word count, with no awareness of sentence or paragraph boundaries — a chunk can end mid-sentence. More advanced approaches (sentence-boundary-aware chunking, or semantic chunking) could improve this.
 
 ### What "embedding dimension" means
-Every chunk, regardless of its actual length, gets converted into a **fixed-size vector of 384 numbers** (using `all-MiniLM-L6-v2`). This dimension count is a property of the specific embedding model, not related to word/character count — a 5-word chunk and a 200-word chunk both produce exactly 384 numbers. Think of it as a fixed-length "fingerprint of meaning" for whatever text goes in.
+Every chunk, regardless of length, becomes a **fixed-size vector of 384 numbers** (`all-MiniLM-L6-v2`). This is a property of the specific model, not related to word/character count.
 
 ### What FAISS actually stores
-`IndexFlatL2` stores every chunk's embedding vector in memory (RAM) as-is, with no compression ("Flat"), and compares vectors using L2 (Euclidean) distance. On search, it does a brute-force comparison against every stored vector — exact and simple, appropriate at this project's scale (tens to low hundreds of chunks), though larger-scale RAG systems (millions of vectors) typically use approximate index types (e.g. `IndexIVFFlat`, `IndexHNSW`) that trade a little accuracy for much greater speed.
+`IndexFlatL2` stores every chunk's embedding vector in memory (RAM), uncompressed, comparing vectors using L2 (Euclidean) distance via brute-force search — exact and simple, appropriate at this project's scale (tens to low hundreds of chunks).
+
+### On temperature and grounding
+LLM `temperature` controls output randomness. Default settings (~0.7-0.8) allow enough creative freedom that a small model can "fill gaps" with plausible-sounding but fabricated content when given weak or incomplete context. Setting `temperature=0.1` in the Ollama call, combined with explicit numbered rules in the prompt ("do not guess," "only state facts explicitly in the context"), meaningfully reduces this — though it's a mitigation, not a complete fix, given the limitations of a small (3B parameter) local model.
 
 ### On third-party components
-This project orchestrates several external tools rather than building any of them from scratch: PyMuPDF (extraction), sentence-transformers (embeddings), FAISS (vector storage/search), and Ollama/Llama 3.2 (text generation). The engineering work is in the pipeline design, chunking/retrieval strategy, prompt engineering for grounding, and confidence handling — not in building the underlying models or libraries. This mirrors how most real-world "AI engineering" roles work: composing and orchestrating existing models and tools effectively, rather than training models from scratch.
+This project orchestrates several external tools rather than building any of them from scratch: PyMuPDF (extraction), sentence-transformers (embeddings), FAISS (vector storage/search), and Ollama/Llama 3.2 (text generation). The engineering work is in the pipeline design, chunking/retrieval strategy, prompt engineering for grounding, confidence handling, and the decision to remove an unreliable feature (web search) in favor of a simpler, more honest one — not in building the underlying models or libraries.
