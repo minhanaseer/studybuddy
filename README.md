@@ -108,3 +108,25 @@ LLM `temperature` controls output randomness. Default settings (~0.7-0.8) allow 
 
 ### On third-party components
 This project orchestrates several external tools rather than building any of them from scratch: PyMuPDF (extraction), sentence-transformers (embeddings), FAISS (vector storage/search), and Ollama/Llama 3.2 (text generation). The engineering work is in the pipeline design, chunking/retrieval strategy, prompt engineering for grounding, confidence handling, and the decision to remove an unreliable feature (web search) in favor of a simpler, more honest one — not in building the underlying models or libraries.
+
+## Experiment: Tuning Chunk Size for a Real-World Data Case
+
+While testing multi-document retrieval with a spreadsheet-derived PDF (a catering budget converted from Excel), a specific retrieval failure surfaced: a question about a named caterer ("what is the item from Mr. Egg?") consistently failed the confidence threshold, even though the correct answer was present in the retrieved chunk.
+
+**Root cause:** the source PDF's table structure was flattened into a single continuous text stream during extraction, so each 200-word chunk contained 10–15 unrelated caterers' data jumbled together. This diluted the embedding's ability to represent any single caterer distinctly.
+
+**Chunk size was reduced in three steps to test whether smaller chunks would isolate the relevant row and improve the match:**
+
+| Chunk size | "Mr Egg" question distance | Change |
+|---|---|---|
+| 200 words (original) | 1.49 | — |
+| 60 words | 1.30 | -0.19 |
+| 30 words | 1.27 | -0.03 |
+
+**Finding: diminishing returns.** Cutting chunk size from 200→60 words gave a meaningful improvement (-0.19), but cutting further from 60→30 words gave almost none (-0.03), despite chunk size dropping by the same proportion. This indicates chunk-size tuning was approaching its ceiling for this failure mode, not scaling linearly with further reduction.
+
+**Conclusion:** this points to a different underlying limitation than chunk size — semantic embedding models are built to capture *meaning*, and a specific proper noun like "Mr Egg" carries little distinct semantic content to the model (it doesn't "mean" much differently from "a caterer" in general). No amount of chunking adjustment fully resolves this, because the limitation sits in what the embedding model represents, not how the text is sliced.
+
+**The correct fix for this class of problem (not yet implemented) would be hybrid search:** combining semantic embedding search with exact keyword matching, so specific names/terms are caught by literal text matching even when their semantic embedding is weak. This is a well-established pattern in production RAG systems for exactly this reason — embeddings and keyword search have complementary strengths.
+
+**Practical takeaway:** chunk size tuning is a real, useful lever, but it has diminishing returns and doesn't fix every retrieval failure mode. Recognizing *when* a result plateaus (rather than continuing to shrink chunk size indefinitely) was itself a useful finding — it pointed to a different, more fundamental limitation worth understanding rather than chasing with the same tool.
