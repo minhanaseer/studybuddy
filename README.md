@@ -68,18 +68,6 @@ An AI-powered study assistant that answers questions strictly from your own uplo
 
 **Cannot answer:** anything not literally present in the uploaded documents (no external/web knowledge), vague meta-questions like "what is this about" or "summarize this" (these rarely match a specific retrieved chunk well), or questions requiring synthesis across an entire document rather than a specific passage.
 
-## Roadmap
-- [x] PDF upload and text extraction (multi-file)
-- [x] Chunking pipeline
-- [x] Embedding pipeline (sentence-transformers)
-- [x] FAISS vector store + similarity search
-- [x] LLM integration for grounded answer generation (Ollama + Llama 3.2, low temperature)
-- [x] Confidence threshold that skips generation on weak matches
-- [x] Multi-PDF support with per-chunk source tracking
-- [x] Dark UI theme
-- [ ] Dockerize the app
-- [ ] Deploy live demo
-- [ ] Record demo video/GIF
 
 ## What I Learned
 - Chunk size matters a lot depending on document type — 500-word chunks were too coarse for a short slide-deck PDF. Switched to 200-word chunks with 30-word overlap for finer-grained retrieval.
