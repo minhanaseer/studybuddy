@@ -39,7 +39,7 @@ def load_embedding_model():
 
 model = load_embedding_model()
 
-def chunk_text(text, chunk_size=30, overlap=8):
+def chunk_text(text, chunk_size=200, overlap=30):
     words = text.split()
     chunks = []
     start = 0
