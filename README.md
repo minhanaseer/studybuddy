@@ -120,3 +120,76 @@ While testing multi-document retrieval with a spreadsheet-derived PDF (a caterin
 **Practical takeaway:** chunk size tuning is a real, useful lever, but it has diminishing returns and doesn't fix every retrieval failure mode. Recognizing *when* a result plateaus (rather than continuing to shrink chunk size indefinitely) was itself a useful finding — it pointed to a different, more fundamental limitation worth understanding rather than chasing with the same tool.
 
 **Final decision:** reverted to `chunk_size=200, overlap=30` as the default. The app's primary use case is prose-heavy lecture notes, where larger chunks preserve complete explanations better than the fragmentation caused by very small chunks. The tabular-data retrieval issue documented above remains a known limitation for spreadsheet-style content specifically, not the general case.
+
+## Dockerized Setup (Multi-Container)
+
+The app is containerized using Docker Compose, running as two separate services rather than one monolithic container — the standard approach for applications with distinct components (an app server and a model-serving service) that have different resource needs and lifecycles.
+
+### Architecture
+
+### Files
+
+**`requirements.txt`** — pinned Python dependencies (streamlit, pymupdf, sentence-transformers, faiss-cpu, ollama).
+
+**`Dockerfile`** — builds the app's image:
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+EXPOSE 8501
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]
+```
+Dependencies are installed in a separate layer from the app code (`COPY requirements.txt` before `COPY app.py`) so Docker can cache the dependency-install step and skip re-running it when only the app code changes, not the dependencies — a standard Docker layer-caching optimization.
+
+**`docker-compose.yml`** — orchestrates both containers:
+```yaml
+services:
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:
+```
+The `ollama_data` named volume persists downloaded models across container restarts. `OLLAMA_HOST` uses `ollama` as a hostname — Docker Compose automatically resolves service names to internal container addresses, so the app container can reach the Ollama container without hardcoding an IP.
+
+### Code change required
+
+`app.py` originally called `ollama.chat()` directly, which implicitly connects to `localhost`. Inside Docker, "localhost" from the app container's perspective is the app container itself, not the Ollama container — so this had to change to an explicit client pointed at an environment variable:
+```python
+import os
+ollama_client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+```
+This falls back to `localhost:11434` when the env var isn't set, so the same code works both locally (outside Docker) and inside the containerized setup without maintaining two versions.
+
+### Running it
+
+```bash
+docker compose up --build
+```
+Builds the app image and starts both containers. First run downloads the Python base image, installs dependencies (`sentence-transformers`'s dependency on `torch` makes this step slow — took ~18 minutes on an 8GB RAM MacBook Air), and pulls the official Ollama image.
+
+The Ollama container starts with no models downloaded. The model has to be pulled into the running container separately:
+```bash
+docker exec -it studybuddy-ollama-1 ollama pull llama3.2
+```
+
+### What I learned setting this up
+- **PATH issues after installing Docker Desktop**: the `docker` CLI binary was installed but not linked into the shell's PATH, requiring a manual addition to `.zshrc` (`export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"`) and a shell restart — a common but non-obvious first-time setup snag.
+- **Resource constraints on 8GB RAM hardware**: running Docker Desktop (which itself runs a Linux VM) alongside Ollama and a model is genuinely close to the practical RAM ceiling on a base MacBook Air. Build times were noticeably slower than typical, and this is a real, honest constraint of developing on modest hardware rather than a sign anything was configured wrong.
+- **Disk usage**: the full setup (base image, Python dependencies including torch, Ollama image, and the pulled model) totals roughly 5-7GB. `docker system df` and `docker system prune -a` are useful for monitoring and reclaiming space, especially relevant with limited free disk space.
+- **Multi-container vs. single-container tradeoff**: chose to run the app and Ollama as separate services rather than bundling everything into one image. This is more representative of real deployment patterns (separate services scale and update independently) even though it required understanding Docker Compose networking (service-name-based hostnames) rather than just a single Dockerfile.

@@ -4,6 +4,8 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 import ollama
+import os
+ollama_client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
 st.set_page_config(page_title="Study Buddy", page_icon="◆", layout="centered")
 
@@ -66,7 +68,7 @@ Context:
 Question: {question}
 
 Answer (strictly from the context above):"""
-    response = ollama.chat(
+    response = ollama_client.chat(
         model='llama3.2',
         messages=[{'role': 'user', 'content': prompt}],
         options={'temperature': 0.1}
