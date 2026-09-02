@@ -5,7 +5,22 @@ import faiss
 import numpy as np
 import ollama
 import os
-ollama_client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+import re
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if GROQ_API_KEY:
+    from openai import OpenAI
+    llm_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+    LLM_MODEL = "openai/gpt-oss-20b"
+    USING_GROQ = True
+else:
+    ollama_client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+    LLM_MODEL = "llama3.2"
+    USING_GROQ = False
 
 st.set_page_config(page_title="Study Buddy", page_icon="◆", layout="centered")
 
@@ -52,6 +67,23 @@ def chunk_text(text, chunk_size=200, overlap=30):
         start += chunk_size - overlap
     return chunks
 
+def find_clause_number(question):
+    match = re.search(r'\b(?:clause|section)\s*(\d+(?:\.\d+)*)', question, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    bare_match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', question)
+    if bare_match:
+        return bare_match.group(1)
+    return None
+
+def find_chunks_containing_clause(chunks, sources, clause_number):
+    pattern = re.compile(r'\b' + re.escape(clause_number) + r'\b')
+    matches = []
+    for i, chunk in enumerate(chunks):
+        if pattern.search(chunk):
+            matches.append((chunk, sources[i]))
+    return matches
+
 def generate_answer_from_notes(question, retrieved_chunks_with_sources):
     context_parts = [f"[From {src}]\n{text}" for text, src in retrieved_chunks_with_sources]
     context = "\n\n".join(context_parts)
@@ -68,12 +100,21 @@ Context:
 Question: {question}
 
 Answer (strictly from the context above):"""
-    response = ollama_client.chat(
-        model='llama3.2',
-        messages=[{'role': 'user', 'content': prompt}],
-        options={'temperature': 0.1}
-    )
-    return response['message']['content']
+
+    if USING_GROQ:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{'role': 'user', 'content': prompt}],
+            temperature=0.1
+        )
+        return response.choices[0].message.content
+    else:
+        response = ollama_client.chat(
+            model=LLM_MODEL,
+            messages=[{'role': 'user', 'content': prompt}],
+            options={'temperature': 0.1}
+        )
+        return response['message']['content']
 
 uploaded_files = st.file_uploader("Upload lecture PDFs", type="pdf", accept_multiple_files=True)
 
@@ -109,37 +150,54 @@ if uploaded_files:
     question = st.text_input("", placeholder="e.g. How do I convert binary to decimal?")
 
     if question:
-        question_embedding = model.encode([question]).astype('float32')
-        k = min(3, len(st.session_state['chunks']))
-        distances, indices = st.session_state['index'].search(question_embedding, k)
-        top_distance = distances[0][0]
+        clause_number = find_clause_number(question)
+        clause_matches = find_chunks_containing_clause(
+            st.session_state['chunks'], st.session_state['sources'], clause_number
+        ) if clause_number else []
 
-        if top_distance > CONFIDENCE_THRESHOLD:
-            st.markdown(
-                '<div class="not-found-block">'
-                '<strong>⚠ Not found in the document(s) attached.</strong><br><br>'
-                'This question doesn\'t appear to be covered in your uploaded notes. '
-                'Try rephrasing, or check that the right document is uploaded.'
-                '</div>',
-                unsafe_allow_html=True
-            )
-            with st.expander("See closest chunks found anyway (for reference)"):
-                for rank, idx in enumerate(indices[0]):
-                    source_name = st.session_state['sources'][idx]
-                    st.markdown(f"**{rank+1}.** *{source_name}* (distance: {distances[0][rank]:.2f})")
-                    st.text(st.session_state['chunks'][idx])
-        else:
-            retrieved_chunks_with_sources = [
-                (st.session_state['chunks'][idx], st.session_state['sources'][idx])
-                for idx in indices[0]
-            ]
-            st.info(f"✓ Good match in your notes (distance: {top_distance:.2f})")
+        if clause_matches:
+            st.info(f"Found exact match for clause/section {clause_number}")
+            retrieved = clause_matches[:3]
             with st.spinner("Generating answer..."):
-                answer = generate_answer_from_notes(question, retrieved_chunks_with_sources)
+                answer = generate_answer_from_notes(question, retrieved)
             st.markdown("### Answer")
             st.markdown('<div class="answer-block">' + answer + '</div>', unsafe_allow_html=True)
             with st.expander("See source chunks used"):
-                for rank, idx in enumerate(indices[0]):
-                    source_name = st.session_state['sources'][idx]
-                    st.markdown(f"**Source {rank+1}** — *{source_name}* (distance: {distances[0][rank]:.2f})")
-                    st.text(st.session_state['chunks'][idx])
+                for rank, (chunk, source_name) in enumerate(retrieved):
+                    st.markdown(f"**Source {rank+1}** — *{source_name}* (exact clause match)")
+                    st.text(chunk)
+        else:
+            question_embedding = model.encode([question]).astype('float32')
+            k = min(3, len(st.session_state['chunks']))
+            distances, indices = st.session_state['index'].search(question_embedding, k)
+            top_distance = distances[0][0]
+
+            if top_distance > CONFIDENCE_THRESHOLD:
+                st.markdown(
+                    '<div class="not-found-block">'
+                    '<strong>⚠ Not found in the document(s) attached.</strong><br><br>'
+                    'This question doesn\'t appear to be covered in your uploaded notes. '
+                    'Try rephrasing, or check that the right document is uploaded.'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+                with st.expander("See closest chunks found anyway (for reference)"):
+                    for rank, idx in enumerate(indices[0]):
+                        source_name = st.session_state['sources'][idx]
+                        st.markdown(f"**{rank+1}.** *{source_name}* (distance: {distances[0][rank]:.2f})")
+                        st.text(st.session_state['chunks'][idx])
+            else:
+                retrieved_chunks_with_sources = [
+                    (st.session_state['chunks'][idx], st.session_state['sources'][idx])
+                    for idx in indices[0]
+                ]
+                st.info(f"✓ Good match in your notes (distance: {top_distance:.2f})")
+                with st.spinner("Generating answer..."):
+                    answer = generate_answer_from_notes(question, retrieved_chunks_with_sources)
+                st.markdown("### Answer")
+                st.markdown('<div class="answer-block">' + answer + '</div>', unsafe_allow_html=True)
+                with st.expander("See source chunks used"):
+                    for rank, idx in enumerate(indices[0]):
+                        source_name = st.session_state['sources'][idx]
+                        st.markdown(f"**Source {rank+1}** — *{source_name}* (distance: {distances[0][rank]:.2f})")
+                        st.text(st.session_state['chunks'][idx])
