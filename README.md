@@ -193,3 +193,46 @@ docker exec -it studybuddy-ollama-1 ollama pull llama3.2
 - **Resource constraints on 8GB RAM hardware**: running Docker Desktop (which itself runs a Linux VM) alongside Ollama and a model is genuinely close to the practical RAM ceiling on a base MacBook Air. Build times were noticeably slower than typical, and this is a real, honest constraint of developing on modest hardware rather than a sign anything was configured wrong.
 - **Disk usage**: the full setup (base image, Python dependencies including torch, Ollama image, and the pulled model) totals roughly 5-7GB. `docker system df` and `docker system prune -a` are useful for monitoring and reclaiming space, especially relevant with limited free disk space.
 - **Multi-container vs. single-container tradeoff**: chose to run the app and Ollama as separate services rather than bundling everything into one image. This is more representative of real deployment patterns (separate services scale and update independently) even though it required understanding Docker Compose networking (service-name-based hostnames) rather than just a single Dockerfile.
+
+## Experiment: Exact-Match Retrieval for Numbered References
+
+Testing with a real legal document (a 17-page tenancy agreement, 50 chunks) surfaced another retrieval failure related to the earlier "Mr Egg" finding: a question about a specific numbered clause ("what does clause 6.4 say") returned "not found," even though the clause was genuinely present in the document.
+
+**Root cause (same underlying issue as the proper-noun case):** legal documents contain dozens of similarly-structured numbered references (4.15.29, 9.1.1, 6.3.2, etc.). Embedding models capture semantic meaning, not exact numeric identifiers — "6.4" doesn't carry distinct meaning relative to "9.1" or "4.15" in vector space, so semantic search struggles to reliably distinguish between them, especially in a document with this many numbered clauses.
+
+**Fix implemented:** rather than trying to force semantic search to handle this case (which has an inherent ceiling, as the earlier chunk-size experiment showed), added a targeted exact-match step that runs *before* semantic search:
+
+```python
+def find_clause_number(question):
+    match = re.search(r'\b(?:clause|section)\s*(\d+(?:\.\d+)*)', question, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    bare_match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', question)
+    if bare_match:
+        return bare_match.group(1)
+    return None
+
+def find_chunks_containing_clause(chunks, sources, clause_number):
+    pattern = re.compile(r'\b' + re.escape(clause_number) + r'\b')
+    matches = []
+    for i, chunk in enumerate(chunks):
+        if pattern.search(chunk):
+            matches.append((chunk, sources[i]))
+    return matches
+```
+
+If the question contains a recognizable clause/section number pattern, the app searches chunk text directly for that exact string (with word boundaries, to avoid "6.4" matching inside "16.4" or "6.40") and skips vector search entirely for that query. Only falls back to normal FAISS similarity search when no clause number pattern is detected.
+
+**Why this is the right fix rather than more chunk-size tuning:** exact identifiers (clause numbers, proper nouns, product codes) are fundamentally a poor fit for semantic search — no amount of chunking adjustment reliably solves it, since the limitation is in what embeddings represent. A targeted exact-match check for structured, identifiable patterns is a standard technique that complements semantic search rather than trying to make one approach do everything.
+
+**Generalization:** this same pattern (detect a structured identifier in the question, exact-match search before falling back to embeddings) could extend to other identifiable patterns beyond clause numbers — e.g. dates, reference codes, or specific named entities — as a lighter-weight alternative to full hybrid search for a bounded set of known pattern types.
+
+## Design Note: Two Independent Grounding Checks
+
+A question can show "Good match" (passing the retrieval confidence check) and still return "I couldn't find this in your notes" — this is expected behavior, not a bug, and reflects two deliberately independent safeguards:
+
+1. **Retrieval confidence (distance threshold)** — answers "is the closest chunk even topically relevant?" A low distance means FAISS found a chunk in the right neighborhood, but says nothing about whether that chunk contains the *specific* fact being asked about.
+
+2. **Generation strictness (the prompt's grounding rules)** — once a topically-relevant chunk is retrieved, the LLM independently judges whether that chunk actually, clearly states the answer to the specific question asked. The prompt explicitly instructs it to say "I couldn't find this in your notes" rather than paraphrase loosely or guess, even from relevant-but-not-quite-on-point context.
+
+**Both checks have to pass for a real answer to be generated.** A chunk can be topically close (e.g., a chunk about tenancy termination, when asked "what's the idea of leaving without informing") without directly answering the specific phrasing of the question — in which case retrieval succeeds but generation correctly declines. This two-layer approach trades away some "helpfulness" (it won't stretch a loosely-related chunk into a confident-sounding answer) for higher trustworthiness — the app is intentionally conservative rather than optimizing for always producing an answer.
